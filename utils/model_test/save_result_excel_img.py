@@ -12,7 +12,8 @@ def save_test_result(opt):
     pred_root = opt.pred_root
     excel_root = opt.excel_root
     model_name = opt.model_name
-    img_size = float(opt.img_size)
+    print(opt.img_wh)
+    img_wh = list(map(float, opt.img_wh))
 
     # ground truth 파일 리스트 취득
     gt_list = glob.glob(os.path.join(gt_root, '*.txt'))
@@ -57,6 +58,7 @@ def save_test_result(opt):
                 pred_cnt = 1
 
             pred_data.columns = pred_columns
+
         # gt와 pred 합치기
         results_df = pd.merge(gt_data, pred_data, left_on='실제 클래스', right_on='예측 클래스', how='outer')
 
@@ -67,20 +69,16 @@ def save_test_result(opt):
         model_df = pd.DataFrame(np.array([model_name] * gt_cnt), columns=["모델명"])
         results_df = pd.concat([model_df, results_df], axis=1)
 
-        if len(pred_data) > 0:
-            # 신뢰도로 sort
-            grouped = results_df.groupby(['모델명', '예측 클래스'])
-            def conf_sort(df, column='신뢰도'):
-                return df.sort_values(by=column, ascending=False)
-            results_df = grouped.apply(conf_sort)
         # TODO 좌표가 -1인 경우 0으로 채우기
         results_df.fillna({'실제_x': 0, '예측_x': 0, '실제_y': 0, '예측_y': 0,
                            '실제_w': 0, '예측_w': 0, '실제_h': 0, '예측_h': 0}, inplace=True)
 
         # 좌표거리 계산
-        new_result = coo_dist(results_df, img_size)
+        new_coo_df = convert_abs_values(results_df, img_wh).copy()
+        # 좌표거리 계산
+        results_df['각 중심점의 차이'] = coo_dist(new_coo_df)
         # 영역크기차이 계산
-        new_result = coo_dist(results_df, img_size)
+        results_df['각 영역의 크기 차이'] = subtract_area(new_coo_df)
 
 
         # 기존 엑셀데이터와 합치기
@@ -92,24 +90,34 @@ def save_test_result(opt):
 
         result3_in.to_excel(f'{excel_root}/{gt_filename}.xlsx')
 
-def coo_dist(coo_df, img_size):
+
+def convert_abs_values(coo_df, img_wh):
     new_coo_df = coo_df.copy()
-    new_coo_df['실제_x'] = new_coo_df['실제_x'] * img_size
-    new_coo_df['실제_y'] = new_coo_df['실제_y'] * img_size
-    new_coo_df['실제_w'] = new_coo_df['실제_w'] * img_size
-    new_coo_df['실제_h'] = new_coo_df['실제_h'] * img_size
-    new_coo_df['예측_x'] = new_coo_df['예측_x'] * img_size
-    new_coo_df['예측_y'] = new_coo_df['예측_y'] * img_size
-    new_coo_df['예측_w'] = new_coo_df['예측_w'] * img_size
-    new_coo_df['예측_h'] = new_coo_df['예측_h'] * img_size
-    # new_coo_df.fillna(0, inplace=True)
-    print(new_coo_df[['실제_x', '실제_y', '예측_x', '예측_y']])
-    x = new_coo_df['실제_x']-new_coo_df['예측_x']
-    y = new_coo_df['실제_y']-new_coo_df['예측_y']
-    new_coo_df['각 중심점의 차이'] = np.sqrt(x ** 2 + y ** 2)
+    img_w, img_h = img_wh[0], img_wh[1]
+    new_coo_df['실제_x'] = new_coo_df['실제_x'] * img_w
+    new_coo_df['실제_y'] = new_coo_df['실제_y'] * img_h
+    new_coo_df['실제_w'] = new_coo_df['실제_w'] * img_w
+    new_coo_df['실제_h'] = new_coo_df['실제_h'] * img_h
+    new_coo_df['예측_x'] = new_coo_df['예측_x'] * img_w
+    new_coo_df['예측_y'] = new_coo_df['예측_y'] * img_h
+    new_coo_df['예측_w'] = new_coo_df['예측_w'] * img_w
+    new_coo_df['예측_h'] = new_coo_df['예측_h'] * img_h
     return new_coo_df
 
-# def get_area():
+def coo_dist(coo_df):
+    new_coo_df = coo_df.copy()
+    x = (new_coo_df['실제_x']-new_coo_df['예측_x'])
+    y = (new_coo_df['실제_y']-new_coo_df['예측_y'])
+    new_coo_df['각 중심점의 차이'] = np.sqrt(x ** 2 + y ** 2)
+    return new_coo_df['각 중심점의 차이']
+
+
+def subtract_area(coo_df):
+    new_coo_df = coo_df.copy()
+    gt_area = new_coo_df['실제_w'] * new_coo_df['실제_h']
+    pred_area = new_coo_df['예측_w'] * new_coo_df['예측_h']
+    new_coo_df['각 영역의 크기 차이'] = abs(gt_area - pred_area)
+    return new_coo_df['각 영역의 크기 차이']
 
 def get_excel(excel_root, file_name):
     if os.path.exists(f'{excel_root}/{file_name}') :
@@ -119,7 +127,7 @@ def get_excel(excel_root, file_name):
         print(f'excel 파일 존재유부 확인 : {file_name}이  존재하지 않습니다')
 
         index = ['번호', '모델명', '실제 클래스', '실제_x', '실제_y', '실제_w', '실제_h',
-                                '예측 클래스', '예측_x', '예측_y', '예측_w', '예측_h', '신뢰도']
+                 '예측 클래스', '예측_x', '예측_y', '예측_w', '예측_h', '신뢰도', '각 중심점의 차이', '각 영역의 크기 차이']
         old_df = pd.DataFrame(columns=index)
     return old_df
 
@@ -130,14 +138,14 @@ def get_pred(pred_root, gt_filename):
 
 
 # python utils/model_test/save_excel2.py --gt_root /Users/lfin/Downloads/model_test/00_gt_labels --pred_root /Users/lfin/Downloads/model_test/20__3090_20220207_kaggle_helmet_vest --excel_root /Users/lfin/Downloads/model_test/10_excel
-if __name__ == "__main__" :
+if __name__ == "__main__":
     excel_path = './YOLO테스트결과_양식.xlsx'
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gt_root', type=str, default='/Users/lfin/Downloads/model_test/00_gt_labels' , help='정답txt파일이 저장된 위치')
+    parser.add_argument('--gt_root', type=str, default='/Users/lfin/Downloads/model_test/00_gt_labels', help='정답txt파일이 저장된 위치')
     parser.add_argument('--pred_root', type=str, default='/Users/lfin/Downloads/model_test/20__3090_20220207_kaggle_helmet_vest/labels', help='예측txt파일이 저장된 위치')
     parser.add_argument('--excel_root', type=str, default='/Users/lfin/Downloads/model_test/10_excel',  help="excel파일을 저장할 위치")
     parser.add_argument('--model_name', type=str, default='3090_kdn2',  help="모델명")
-    parser.add_argument('--img_size', type=str, default='416', help="이미지사이즈")
+    parser.add_argument('--img_wh', type=list, default=[416, 416], help="이미지 너비와 높이")
     opt = parser.parse_args()
     # get_multicolumns()
     save_test_result(opt)
