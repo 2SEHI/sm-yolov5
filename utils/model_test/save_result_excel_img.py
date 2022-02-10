@@ -32,20 +32,19 @@ def save_test_result(opt):
     pred_columns = ['예측 클래스', '예측_x', '예측_y', '예측_w', '예측_h', '신뢰도']
 
     for gt_file in gt_list:
-        # print(f'\n{gt_file}')
         gt_filename, exp = os.path.splitext(gt_file)
-        # gt 파일명의 엑셀파일 불러옴
+        # 엑셀파일 불러오기
         excel_pd = get_excel(excel_root, f'{gt_filename}.xlsx')
-        # print(excel_pd)
 
+        # gt데이터 가져오기
         gt_path = f'{gt_root}/{gt_file}'
-
         gt_data = pd.DataFrame(columns=gt_columns, dtype=np.float64)
         # gt 파일내용이 있을 경우 내용 읽어오기
         if not os.stat(gt_path).st_size == 0:
             print('gt 파일 내용이 존재합니다.')
             gt_data = pd.read_csv(gt_path, sep=' ', header=None, dtype=np.float64)
         gt_data.columns = gt_columns
+
 
         # predict 파일 내용 읽어오기
         pred_path = f'{pred_root}/{gt_file}'
@@ -54,19 +53,25 @@ def save_test_result(opt):
         if os.path.exists(pred_path):
             pred_data = pd.read_csv(pred_path, sep=' ', header=None, dtype=np.float64)
             pred_cnt = len(pred_data)
-            if pred_cnt < 2:
-                pred_cnt = 1
 
-            pred_data.columns = pred_columns
+            if pred_cnt > 0:
+                # 신뢰도로 sort
+                grouped = pred_data.groupby(0)
+                def conf_sort(df, column=5):
+                    return df.sort_values(by=column, ascending=False)
+                pred_data = grouped.apply(conf_sort)
+
+        pred_data.columns = pred_columns
 
         # gt와 pred 합치기
-        results_df = pd.merge(gt_data, pred_data, left_on='실제 클래스', right_on='예측 클래스', how='outer')
+        # TODO gt데이터가 1개, pred데이터가 2개인 경우 merge할 때 gt데이터가 2개로 복사됨
+        results_df = pd.merge(gt_data, pred_data, left_on='실제 클래스', right_on='예측 클래스', how='outer', copy=False)
 
         # 모델명 컬럼 추가
-        gt_cnt = len(results_df)
-        if gt_cnt < 2:
-            gt_cnt = 1
-        model_df = pd.DataFrame(np.array([model_name] * gt_cnt), columns=["모델명"])
+        result_cnt = len(results_df)
+        if result_cnt < 2:
+            result_cnt = 1
+        model_df = pd.DataFrame(np.array([model_name] * result_cnt), columns=["모델명"])
         results_df = pd.concat([model_df, results_df], axis=1)
 
         # TODO 좌표가 -1인 경우 0으로 채우기
@@ -79,7 +84,15 @@ def save_test_result(opt):
         results_df['각 중심점의 차이'] = coo_dist(new_coo_df)
         # 영역크기차이 계산
         results_df['각 영역의 크기 차이'] = subtract_area(new_coo_df)
+        # gt데이터의 개수
+        results_df['실제객체 수'] = len(gt_data)
+        # 탐지객체 수 계산
+        results_df['탐지객체 수'] = len(pred_data)
 
+        gt_class = list(gt_data['실제 클래스'])
+        pred_class = list(pred_data['예측 클래스'])
+        obj_cnt = cnt_dupl_obj(gt_class, pred_class)
+        results_df['클래스 일치도'] = obj_cnt
 
         # 기존 엑셀데이터와 합치기
         dfs = [excel_pd, results_df]
@@ -111,7 +124,6 @@ def coo_dist(coo_df):
     new_coo_df['각 중심점의 차이'] = np.sqrt(x ** 2 + y ** 2)
     return new_coo_df['각 중심점의 차이']
 
-
 def subtract_area(coo_df):
     new_coo_df = coo_df.copy()
     gt_area = new_coo_df['실제_w'] * new_coo_df['실제_h']
@@ -127,7 +139,8 @@ def get_excel(excel_root, file_name):
         print(f'excel 파일 존재유부 확인 : {file_name}이  존재하지 않습니다')
 
         index = ['번호', '모델명', '실제 클래스', '실제_x', '실제_y', '실제_w', '실제_h',
-                 '예측 클래스', '예측_x', '예측_y', '예측_w', '예측_h', '신뢰도', '각 중심점의 차이', '각 영역의 크기 차이']
+                 '예측 클래스', '예측_x', '예측_y', '예측_w', '예측_h', '신뢰도', '각 중심점의 차이', '각 영역의 크기 차이',
+                 '실제객체 수', '탐지객체 수', '클래스 일치도']
         old_df = pd.DataFrame(columns=index)
     return old_df
 
@@ -136,6 +149,19 @@ def get_pred(pred_root, gt_filename):
         pred_data = pd.read_csv(f'{pred_root}/{gt_filename}', sep=" ", header=None)
         print(pred_data)
 
+def cnt_dupl_obj(list1, list2):
+    cnt = 0
+    print(f'{list1}')
+    print(f'{list2}')
+    while list2 and list1:
+        list2_pop = list2.pop()
+        if list2_pop in list1:
+            cnt += 1
+            list1.remove(list2_pop)
+        print(f'list1 : {list1}')
+        print(f'list2 : {list2}')
+    print(f'겹치는 객체 수 : {cnt}')
+    return cnt
 
 # python utils/model_test/save_excel2.py --gt_root /Users/lfin/Downloads/model_test/00_gt_labels --pred_root /Users/lfin/Downloads/model_test/20__3090_20220207_kaggle_helmet_vest --excel_root /Users/lfin/Downloads/model_test/10_excel
 if __name__ == "__main__":
@@ -147,7 +173,6 @@ if __name__ == "__main__":
     parser.add_argument('--model_name', type=str, default='3090_kdn2',  help="모델명")
     parser.add_argument('--img_wh', type=list, default=[416, 416], help="이미지 너비와 높이")
     opt = parser.parse_args()
-    # get_multicolumns()
     save_test_result(opt)
 
 
